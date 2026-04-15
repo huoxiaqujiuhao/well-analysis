@@ -1,10 +1,21 @@
 """Data loading and basic validation."""
 
+from __future__ import annotations
+
+import os
 from pathlib import Path
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).parents[4] / "data" / "raw"
+
+def _resolve_data_dir() -> Path:
+    env = os.environ.get("WELL_ANALYSIS_DATA_DIR")
+    if env:
+        return Path(env).expanduser() / "raw"
+    return Path(__file__).resolve().parents[4] / "well-analysis-data" / "raw"
+
+
+DATA_DIR = _resolve_data_dir()
 
 
 def load_test_data(path: Path | None = None) -> pd.DataFrame:

@@ -40,29 +40,42 @@ def segment_cycles(
     fs: float,
     pump_freq: float,
     min_fraction: float = 0.7,
+    max_fraction: float = 1.4,
+    detrend_window_periods: float | None = 5.0,
 ) -> list[tuple[int, int]]:
     """Return (start, end) index pairs for individual pump cycles.
 
-    Uses zero-crossings of the position signal around its median to find
-    cycle boundaries (one crossing per upstroke start).
+    Uses upward zero-crossings of the (optionally locally-detrended) position
+    signal to find cycle boundaries — one crossing per upstroke start.
 
     Parameters
     ----------
-    min_fraction:
-        Discard cycles shorter than ``min_fraction`` of the expected period.
+    min_fraction / max_fraction:
+        Keep only cycles whose length is within
+        ``[min_fraction, max_fraction]`` × the theoretical period.
+    detrend_window_periods:
+        If set, subtract a rolling median of width
+        ``detrend_window_periods`` × period before zero-crossing detection.
+        Removes sub-cutoff drift residue that can displace crossings.
+        ``None`` reproduces the legacy global-median behaviour.
     """
     period_samples = int(fs / pump_freq)
-    median_pos = np.median(position)
-    centered = position - median_pos
+    if detrend_window_periods is None:
+        centered = position - np.median(position)
+    else:
+        from scipy.ndimage import median_filter
 
-    # Upward zero-crossings → start of upstroke
+        w = max(3, int(detrend_window_periods * period_samples) | 1)  # odd
+        centered = position - median_filter(position, size=w, mode="nearest")
+
     crossings = np.where((centered[:-1] < 0) & (centered[1:] >= 0))[0]
 
     min_len = int(min_fraction * period_samples)
+    max_len = int(max_fraction * period_samples)
     cycles = []
     for i in range(len(crossings) - 1):
         s, e = crossings[i], crossings[i + 1]
-        if (e - s) >= min_len:
+        if min_len <= (e - s) <= max_len:
             cycles.append((int(s), int(e)))
     return cycles
 
@@ -78,10 +91,18 @@ def extract_dynamometer_cards(
     fs: float,
     pump_freq: float,
     n_points: int = 200,
+    valid_mask: np.ndarray | None = None,
 ) -> list[dict]:
     """Extract one dynamometer card per pump cycle.
 
     Each card is re-sampled to ``n_points`` for uniform comparison.
+
+    Parameters
+    ----------
+    valid_mask:
+        Optional bool array, same length as ``position``. Cycles are dropped
+        if *any* sample within them is invalid — used to exclude cycles
+        overlapping high-pass filter transients at segment boundaries.
 
     Returns
     -------
@@ -90,6 +111,8 @@ def extract_dynamometer_cards(
     cycles = segment_cycles(position, fs, pump_freq)
     cards = []
     for s, e in cycles:
+        if valid_mask is not None and not valid_mask[s:e].all():
+            continue
         pos_c = position[s:e]
         load_c = load[s:e]
         t_orig = np.linspace(0, 1, len(pos_c))
